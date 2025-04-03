@@ -15,6 +15,7 @@ import {
   ThermometerSun,
   Edit,
   Save,
+  Trash,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -25,11 +26,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import MapWrapper from "@/components/map-wrapper";
+import dynamic from "next/dynamic";
 import {
   Dialog,
   DialogContent,
@@ -39,8 +39,19 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { getDeviceById, getDeviceHistory, updateDevice } from "@/lib/api";
-import { Polyline, Popup } from "react-leaflet";
+import {
+  getDeviceById,
+  getDeviceHistory,
+  updateDevice,
+  clearDeviceLocationHistory,
+} from "@/lib/api";
+import { Polyline, Popup, Marker } from "react-leaflet";
+import SendMessage from "@/components/send-message";
+
+// Dynamically import MapWrapper to ensure it only runs on the client side
+const MapWrapper = dynamic(() => import("@/components/map-wrapper"), {
+  ssr: false,
+});
 
 export default function DeviceDetailPage({
   params,
@@ -51,7 +62,6 @@ export default function DeviceDetailPage({
   const [device, setDevice] = useState<any>(null);
   const [deviceHistory, setDeviceHistory] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [showHistory, setShowHistory] = useState(false);
   const [mapCenter, setMapCenter] = useState<[number, number]>([
     20.5937, 78.9629,
   ]); // Default center of India
@@ -72,10 +82,7 @@ export default function DeviceDetailPage({
 
       try {
         const deviceData = await getDeviceById(params.id);
-        const historyData = await getDeviceHistory(params.id);
-
         setDevice(deviceData);
-        setDeviceHistory(historyData);
         setMapCenter([
           deviceData?.location?.lat || 20.5937,
           deviceData?.location?.lng || 78.9629,
@@ -97,6 +104,25 @@ export default function DeviceDetailPage({
     };
 
     fetchDeviceData();
+  }, [params.id]);
+
+  useEffect(() => {
+    const fetchDeviceHistory = async () => {
+      try {
+        const historyData = await getDeviceHistory(params.id);
+        setDeviceHistory(historyData.slice(-4)); // Only keep the last 4 entries
+      } catch (err) {
+        console.error("Error fetching device history:", err);
+      }
+    };
+
+    fetchDeviceHistory();
+
+    const interval = setInterval(() => {
+      fetchDeviceHistory();
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, [params.id]);
 
   const handleEditSubmit = async (e: React.FormEvent) => {
@@ -122,6 +148,16 @@ export default function DeviceDetailPage({
       setError("Failed to update device. Please try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteHistory = async () => {
+    try {
+      await clearDeviceLocationHistory(params.id);
+      setDeviceHistory([]);
+    } catch (err) {
+      console.error("Error deleting device history:", err);
+      setError("Failed to delete device history. Please try again.");
     }
   };
 
@@ -366,11 +402,11 @@ export default function DeviceDetailPage({
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {(device.history || []).map((entry: any, index: number) => (
+                  {(deviceHistory || []).map((entry: any, index: number) => (
                     <div key={index} className="flex items-start space-x-3">
                       <div className="flex flex-col items-center">
                         <div className="h-2 w-2 rounded-full bg-primary"></div>
-                        {index < device.history.length - 1 && (
+                        {index < deviceHistory.length - 1 && (
                           <div className="h-10 w-0.5 bg-muted"></div>
                         )}
                       </div>
@@ -398,6 +434,24 @@ export default function DeviceDetailPage({
                     </div>
                   ))}
                 </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="mt-4"
+                  onClick={handleDeleteHistory}
+                >
+                  <Trash className="mr-2 h-4 w-4" /> Delete History
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Send Message</CardTitle>
+                <CardDescription>Send a message to the device</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <SendMessage deviceId={params.id} />
               </CardContent>
             </Card>
           </div>
@@ -412,36 +466,20 @@ export default function DeviceDetailPage({
                       Real-time location of the device
                     </CardDescription>
                   </div>
-                  <Tabs defaultValue="current" className="w-[200px]">
-                    <TabsList>
-                      <TabsTrigger
-                        value="current"
-                        onClick={() => setShowHistory(false)}
-                      >
-                        Current
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="history"
-                        onClick={() => setShowHistory(true)}
-                      >
-                        History
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="h-[600px] w-full">
                   <MapWrapper
                     device={device}
-                    showHistory={showHistory}
+                    showHistory={true}
                     mapCenter={mapCenter}
                     formatDate={formatDate}
                   >
                     {/* History line */}
-                    {showHistory && (
+                    {deviceHistory.length > 0 && (
                       <Polyline
-                        positions={device.history.map((entry: any) => [
+                        positions={deviceHistory.map((entry: any) => [
                           entry.location.lat,
                           entry.location.lng,
                         ])}
@@ -452,24 +490,49 @@ export default function DeviceDetailPage({
                             <p>
                               <strong>Date:</strong>{" "}
                               {new Date(
-                                device.history[0].timestamp,
+                                deviceHistory[0].timestamp,
                               ).toLocaleDateString()}
                             </p>
                             <p>
                               <strong>Time:</strong>{" "}
                               {new Date(
-                                device.history[0].timestamp,
+                                deviceHistory[0].timestamp,
                               ).toLocaleTimeString()}
                             </p>
                             <p>
                               <strong>Coordinates:</strong>{" "}
-                              {device.history[0].location.lat.toFixed(4)},{" "}
-                              {device.history[0].location.lng.toFixed(4)}
+                              {deviceHistory[0].location.lat.toFixed(4)},{" "}
+                              {deviceHistory[0].location.lng.toFixed(4)}
                             </p>
                           </div>
                         </Popup>
                       </Polyline>
                     )}
+                    {/* Markers */}
+                    {deviceHistory.map((entry: any, index: number) => (
+                      <Marker
+                        key={index}
+                        position={[entry.location.lat, entry.location.lng]}
+                      >
+                        <Popup>
+                          <div className="p-2">
+                            <p>
+                              <strong>Date:</strong>{" "}
+                              {new Date(entry.timestamp).toLocaleDateString()}
+                            </p>
+                            <p>
+                              <strong>Time:</strong>{" "}
+                              {new Date(entry.timestamp).toLocaleTimeString()}
+                            </p>
+                            <p>
+                              <strong>Coordinates:</strong>{" "}
+                              {entry.location.lat.toFixed(4)},{" "}
+                              {entry.location.lng.toFixed(4)}
+                            </p>
+                          </div>
+                        </Popup>
+                      </Marker>
+                    ))}
                   </MapWrapper>
                 </div>
               </CardContent>
